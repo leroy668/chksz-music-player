@@ -32,18 +32,32 @@ import {
   type MusicSource,
   type Track,
 } from "./lib/musicApi";
+import importedSongsText from "./data/importedSongs.txt?raw";
 
-type Page = "discover" | "library";
+type Page = "discover" | "library" | "imported";
 
 const KEY_STORAGE = "soundfield-chksz-api-key";
 const FAVORITES_STORAGE = "soundfield-favorites";
 const DEFAULT_COVER = "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?auto=format&fit=crop&w=400&q=80";
 
-const playlists = [
-  { name: "深夜工作流", count: 28, color: "red" },
-  { name: "城市漫游", count: 46, color: "gold" },
-  { name: "晴天的窗边", count: 19, color: "blue" },
-];
+const importedTracks: Track[] = importedSongsText
+  .split(/\r?\n/)
+  .map((line) => line.trim())
+  .filter(Boolean)
+  .map((line, index) => {
+    const separator = line.lastIndexOf(" - ");
+    const name = separator >= 0 ? line.slice(0, separator).trim() : line;
+    const singer = separator >= 0 ? line.slice(separator + 3).trim() : "未知歌手";
+    return {
+      id: `qq-import-${index + 1}`,
+      source: "qq",
+      name,
+      singer,
+      album: "歌曲.txt 导入",
+      imported: true,
+      lookup: `${name} ${singer}`,
+    };
+  });
 
 const formatTime = (seconds?: number) => {
   if (!seconds || !Number.isFinite(seconds)) return "--:--";
@@ -86,7 +100,7 @@ export default function App() {
   const [duration, setDuration] = useState(0);
   const audioRef = useRef<HTMLAudioElement>(null);
 
-  const displayTracks = page === "library" ? favorites : results;
+  const displayTracks = page === "library" ? favorites : page === "imported" ? importedTracks : results;
   const isCurrentFavorite = Boolean(current && favorites.some((track) => track.source === current.source && track.id === current.id));
 
   useEffect(() => {
@@ -139,7 +153,7 @@ export default function App() {
       if (!resolved.url) throw new Error("该歌曲暂时没有可播放地址。");
       setCurrent(resolved);
       setQueue((previous) => {
-        const next = displayTracks.map((item) => (item.source === resolved.source && item.id === resolved.id ? resolved : item));
+        const next = displayTracks.map((item) => (item.source === track.source && item.id === track.id ? resolved : item));
         return next.length ? next : previous;
       });
       setIsPlaying(true);
@@ -216,7 +230,7 @@ export default function App() {
         <div className="side-section">
           <div className="side-section-heading"><span>歌单</span><button aria-label="新建歌单" title="新建歌单"><Plus size={16} /></button></div>
           <div className="playlist-list">
-            {playlists.map((playlist) => <button key={playlist.name}><i className={playlist.color} /><span>{playlist.name}</span><small>{playlist.count}</small></button>)}
+            <button className={page === "imported" ? "active" : ""} onClick={() => { setPage("imported"); setSource("qq"); setIsMobileNavOpen(false); }}><i className="gold" /><span>歌曲.txt 导入</span><small>{importedTracks.length}</small></button>
           </div>
         </div>
         <div className="side-bottom">
@@ -243,8 +257,8 @@ export default function App() {
           <section className="hero-area">
             <div>
               <p className="eyebrow">CHKSZ API MUSIC</p>
-              <h1>{page === "library" ? "我的音乐库" : "此刻，听见更多"}</h1>
-              <p>{page === "library" ? "在这里播放和管理已收藏的歌曲。" : "连接你的 ChKSz API Key，搜索并播放多平台音乐。"}</p>
+              <h1>{page === "library" ? "我的音乐库" : page === "imported" ? "歌曲.txt 导入" : "此刻，听见更多"}</h1>
+              <p>{page === "library" ? "在这里播放和管理已收藏的歌曲。" : page === "imported" ? `已导入 ${importedTracks.length} 首 QQ 音乐，点击歌曲时自动搜索并播放。` : "连接你的 ChKSz API Key，搜索并播放多平台音乐。"}</p>
             </div>
             <div className="hero-visual" aria-hidden="true"><span /><span /><span /><span /><span /></div>
           </section>
@@ -253,7 +267,7 @@ export default function App() {
             {sourceChoices.map((choice) => <button key={choice.id} className={source === choice.id ? "active" : ""} onClick={() => setSource(choice.id)}>{choice.label}</button>)}
           </section>}
 
-          {!apiKey && page === "discover" && <section className="key-notice">
+          {!apiKey && page !== "library" && <section className="key-notice">
             <div><KeyRound size={20} /><span><strong>还未连接 API Key</strong><small>搜索和播放前，需要填写你的 ChKSz API Key。</small></span></div>
             <button onClick={() => setIsSettingsOpen(true)}>去连接</button>
           </section>}
@@ -261,7 +275,7 @@ export default function App() {
           {notice && <div className="message notice-message">{notice}</div>}
 
           <section className="results-section">
-            <div className="section-title"><div><h2>{page === "library" ? "收藏歌曲" : results.length ? `“${query}” 的搜索结果` : "开始搜索"}</h2><p>{page === "library" ? `${favorites.length} 首已收藏` : results.length ? `${results.length} 首来自 ${getSourceLabel(source)}` : "输入关键词后，选择音乐源进行搜索"}</p></div><button aria-label="更多操作"><MoreHorizontal size={20} /></button></div>
+            <div className="section-title"><div><h2>{page === "library" ? "收藏歌曲" : page === "imported" ? "QQ 音乐歌单" : results.length ? `“${query}” 的搜索结果` : "开始搜索"}</h2><p>{page === "library" ? `${favorites.length} 首已收藏` : page === "imported" ? `${importedTracks.length} 条记录，保留歌曲.txt 原始顺序` : results.length ? `${results.length} 首来自 ${getSourceLabel(source)}` : "输入关键词后，选择音乐源进行搜索"}</p></div><button aria-label="更多操作"><MoreHorizontal size={20} /></button></div>
             {isSearching ? <div className="loading-state"><LoaderCircle className="spin" size={27} /><span>正在检索音乐...</span></div> : displayTracks.length ? <div className="track-list">
               <div className="track-heading"><span>#</span><span>歌曲</span><span className="wide-only">专辑</span><span className="wide-only"><Clock3 size={15} /></span><span /></div>
               {displayTracks.map((track, index) => <TrackRow key={`${track.source}-${track.id}-${index}`} track={track} index={index} active={current?.source === track.source && current?.id === track.id} favorite={favorites.some((item) => item.source === track.source && item.id === track.id)} playing={isPlaying} busy={isResolving} onPlay={() => void playTrack(track, index)} onFavorite={() => toggleFavorite(track)} />)}

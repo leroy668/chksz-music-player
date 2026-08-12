@@ -13,6 +13,8 @@ export type Track = {
   url?: string;
   lyric?: string;
   quality?: string;
+  imported?: boolean;
+  lookup?: string;
 };
 
 export class ChkszApiError extends Error {
@@ -132,6 +134,28 @@ const locateDetail = (body: Record<string, unknown>): Record<string, unknown> =>
 };
 
 export async function resolveTrack(track: Track, apiKey: string): Promise<Track> {
+  if (track.imported) {
+    const matches = await searchMusic("qq", track.lookup || `${track.name} ${track.singer}`, apiKey);
+    if (!matches.length) throw new ChkszApiError(`QQ 音乐中没有找到“${track.name}”。`, 404);
+
+    const normalize = (value: string) => value.toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+    const expectedName = normalize(track.name);
+    const expectedSinger = normalize(track.singer);
+    const bestMatch = matches
+      .map((match) => {
+        const matchedName = normalize(match.name);
+        const matchedSinger = normalize(match.singer);
+        let score = matchedName === expectedName ? 100 : 0;
+        if (!score && (matchedName.includes(expectedName) || expectedName.includes(matchedName))) score += 40;
+        if (matchedSinger === expectedSinger) score += 60;
+        else if (matchedSinger.includes(expectedSinger) || expectedSinger.includes(matchedSinger)) score += 30;
+        return { match, score };
+      })
+      .sort((left, right) => right.score - left.score)[0].match;
+    const resolved = await resolveTrack(bestMatch, apiKey);
+    return { ...resolved, id: track.id, imported: true, lookup: track.lookup };
+  }
+
   if (track.source === "netease") {
     const response = await request(
       "/api/163_music",

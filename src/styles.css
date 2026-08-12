@@ -50,6 +50,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 .side-section-heading button { display: grid; place-items: center; padding: 0; color: #989aa2; background: transparent; border: 0; }
 .playlist-list { display: grid; gap: 2px; }
 .playlist-list button { min-height: 37px; gap: 10px; color: #a4a6ad; font-size: 12px; font-weight: 500; }
+.playlist-list button.active { color: #fff; background: #292c32; }
 .playlist-list i { width: 13px; height: 13px; flex: 0 0 auto; border-radius: 3px; }
 .playlist-list i.red { background: #d75a56; }.playlist-list i.gold { background: #d6aa5d; }.playlist-list i.blue { background: #6b92d7; }
 .playlist-list small { margin-left: auto; color: #63666e; font-size: 11px; }
