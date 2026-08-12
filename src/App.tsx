@@ -35,8 +35,10 @@ import {
 } from "./lib/musicApi";
 import importedSongsText from "./data/importedSongs.txt?raw";
 import "./playlists.css";
+import "./playbackModes.css";
 
 type Page = "discover" | "library" | "imported" | "playlist";
+type PlayMode = "repeat-all" | "shuffle" | "repeat-one";
 
 type UserPlaylist = {
   id: string;
@@ -47,6 +49,7 @@ type UserPlaylist = {
 const KEY_STORAGE = "soundfield-chksz-api-key";
 const FAVORITES_STORAGE = "soundfield-favorites";
 const PLAYLISTS_STORAGE = "soundfield-playlists";
+const PLAY_MODE_STORAGE = "soundfield-play-mode";
 const DEFAULT_COVER = "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?auto=format&fit=crop&w=400&q=80";
 
 const importedTracks: Track[] = importedSongsText
@@ -118,6 +121,10 @@ export default function App() {
   const [lyric, setLyric] = useState("");
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [playMode, setPlayMode] = useState<PlayMode>(() => {
+    const stored = localStorage.getItem(PLAY_MODE_STORAGE);
+    return stored === "shuffle" || stored === "repeat-one" ? stored : "repeat-all";
+  });
   const audioRef = useRef<HTMLAudioElement>(null);
 
   const selectedPlaylist = userPlaylists.find((playlist) => playlist.id === selectedPlaylistId);
@@ -131,6 +138,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(PLAYLISTS_STORAGE, JSON.stringify(userPlaylists));
   }, [userPlaylists]);
+
+  useEffect(() => {
+    localStorage.setItem(PLAY_MODE_STORAGE, playMode);
+  }, [playMode]);
 
   useEffect(() => {
     if (!current?.url || !audioRef.current) return;
@@ -169,7 +180,7 @@ export default function App() {
     }
   };
 
-  const playTrack = async (track: Track, index: number) => {
+  const playTrack = async (track: Track, index: number, sourceQueue = displayTracks) => {
     setError("");
     setNotice("");
     setIsResolving(true);
@@ -178,7 +189,7 @@ export default function App() {
       if (!resolved.url) throw new Error("该歌曲暂时没有可播放地址。");
       setCurrent(resolved);
       setQueue((previous) => {
-        const next = displayTracks.map((item) => (item.source === track.source && item.id === track.id ? resolved : item));
+        const next = sourceQueue.map((item) => (item.source === track.source && item.id === track.id ? resolved : item));
         return next.length ? next : previous;
       });
       setIsPlaying(true);
@@ -200,14 +211,32 @@ export default function App() {
     }
   };
 
-  const stepTrack = (direction: 1 | -1) => {
+  const stepTrack = (direction: 1 | -1, automatic = false) => {
     const activeQueue = queue.length ? queue : displayTracks;
     if (!activeQueue.length) return;
+    if (automatic && playMode === "repeat-one" && audioRef.current) {
+      audioRef.current.currentTime = 0;
+      audioRef.current.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+      return;
+    }
     const activeIndex = current
       ? activeQueue.findIndex((track) => track.source === current.source && track.id === current.id)
       : -1;
-    const nextIndex = (activeIndex + direction + activeQueue.length) % activeQueue.length;
-    void playTrack(activeQueue[nextIndex], nextIndex);
+    let nextIndex = (activeIndex + direction + activeQueue.length) % activeQueue.length;
+    if (playMode === "shuffle" && activeQueue.length > 1) {
+      do nextIndex = Math.floor(Math.random() * activeQueue.length);
+      while (nextIndex === activeIndex);
+    }
+    void playTrack(activeQueue[nextIndex], nextIndex, activeQueue);
+  };
+
+  const setPlaybackMode = (mode: PlayMode) => {
+    setPlayMode(mode);
+    setNotice(`播放模式：${mode === "shuffle" ? "随机播放" : mode === "repeat-one" ? "单曲循环" : "列表循环"}`);
+  };
+
+  const cyclePlaybackMode = () => {
+    setPlaybackMode(playMode === "repeat-all" ? "shuffle" : playMode === "shuffle" ? "repeat-one" : "repeat-all");
   };
 
   const toggleFavorite = (track: Track) => {
@@ -360,7 +389,7 @@ export default function App() {
           <section className="lower-grid">
             <div className="queue-card">
               <div className="section-title"><div><h2>播放队列</h2><p>{queue.length ? `${queue.length} 首歌曲` : "从搜索结果中选择歌曲"}</p></div><ListMusic size={20} /></div>
-              {queue.length ? <ol className="queue-list">{queue.slice(0, 4).map((track, index) => <li key={`${track.source}-${track.id}-${index}`}><span>{index + 1}</span><button onClick={() => void playTrack(track, index)}><strong>{track.name}</strong><small>{track.singer}</small></button></li>)}</ol> : <div className="queue-empty">队列为空</div>}
+              {queue.length ? <ol className="queue-list">{queue.slice(0, 4).map((track, index) => <li key={`${track.source}-${track.id}-${index}`}><span>{index + 1}</span><button onClick={() => void playTrack(track, index, queue)}><strong>{track.name}</strong><small>{track.singer}</small></button></li>)}</ol> : <div className="queue-empty">队列为空</div>}
             </div>
             <div className="lyrics-card">
               <div className="section-title"><div><h2>歌词</h2><p>{current ? `${current.name} · ${current.singer}` : "选择歌曲后显示"}</p></div><Music2 size={20} /></div>
@@ -371,10 +400,10 @@ export default function App() {
       </section>
 
       <footer className="player-bar">
-        <audio ref={audioRef} onTimeUpdate={(event) => setPosition(event.currentTarget.currentTime)} onDurationChange={(event) => setDuration(event.currentTarget.duration)} onEnded={() => stepTrack(1)} onPlay={() => setIsPlaying(true)} onPause={() => setIsPlaying(false)} />
+        <audio ref={audioRef} onTimeUpdate={(event) => setPosition(event.currentTarget.currentTime)} onDurationChange={(event) => setDuration(event.currentTarget.duration)} onEnded={() => stepTrack(1, true)} onPlay={() => setIsPlaying(true)} onPause={() => setIsPlaying(false)} />
         <div className="now-playing"><img src={current?.cover || DEFAULT_COVER} alt="" /><div><strong>{current?.name || "还没有播放歌曲"}</strong><small>{current ? `${current.singer} · ${current.album}` : "选择一首歌曲开始聆听"}</small></div><button className={isCurrentFavorite ? "liked" : ""} onClick={() => current && toggleFavorite(current)} disabled={!current} aria-label="收藏当前歌曲"><Heart size={18} fill={isCurrentFavorite ? "currentColor" : "none"} /></button></div>
-        <div className="play-controls"><div><button onClick={() => stepTrack(-1)} disabled={!queue.length && !displayTracks.length} aria-label="上一首"><SkipBack size={19} fill="currentColor" /></button><button className="play-button" onClick={togglePlay} disabled={!current} aria-label={isPlaying ? "暂停" : "播放"}>{isPlaying ? <Pause size={21} fill="currentColor" /> : <Play size={21} fill="currentColor" />}</button><button onClick={() => stepTrack(1)} disabled={!queue.length && !displayTracks.length} aria-label="下一首"><SkipForward size={19} fill="currentColor" /></button></div><div className="progress-row"><span>{formatTime(position)}</span><input type="range" min="0" max={duration || current?.duration || 0} value={Math.min(position, duration || current?.duration || 0)} onChange={(event) => { const next = Number(event.target.value); if (audioRef.current) audioRef.current.currentTime = next; setPosition(next); }} disabled={!current} aria-label="播放进度" /><span>{formatTime(duration || current?.duration)}</span></div></div>
-        <div className="player-tools"><button aria-label="随机播放"><Shuffle size={18} /></button><button aria-label="循环播放"><Repeat2 size={18} /></button><button aria-label="音量"><Volume2 size={18} /></button><input type="range" min="0" max="1" step="0.05" defaultValue="0.8" onChange={(event) => { if (audioRef.current) audioRef.current.volume = Number(event.target.value); }} aria-label="音量" /></div>
+        <div className="play-controls"><div><button className={`mobile-mode-button ${playMode !== "repeat-all" ? "active" : ""}`} onClick={cyclePlaybackMode} aria-label={`当前为${playMode === "shuffle" ? "随机播放" : playMode === "repeat-one" ? "单曲循环" : "列表循环"}，点击切换`} title={playMode === "shuffle" ? "随机播放" : playMode === "repeat-one" ? "单曲循环" : "列表循环"}>{playMode === "shuffle" ? <Shuffle size={18} /> : <span className="repeat-mode-icon"><Repeat2 size={18} />{playMode === "repeat-one" && <b>1</b>}</span>}</button><button onClick={() => stepTrack(-1)} disabled={!queue.length && !displayTracks.length} aria-label="上一首"><SkipBack size={19} fill="currentColor" /></button><button className="play-button" onClick={togglePlay} disabled={!current} aria-label={isPlaying ? "暂停" : "播放"}>{isPlaying ? <Pause size={21} fill="currentColor" /> : <Play size={21} fill="currentColor" />}</button><button onClick={() => stepTrack(1)} disabled={!queue.length && !displayTracks.length} aria-label="下一首"><SkipForward size={19} fill="currentColor" /></button></div><div className="progress-row"><span>{formatTime(position)}</span><input type="range" min="0" max={duration || current?.duration || 0} value={Math.min(position, duration || current?.duration || 0)} onChange={(event) => { const next = Number(event.target.value); if (audioRef.current) audioRef.current.currentTime = next; setPosition(next); }} disabled={!current} aria-label="播放进度" /><span>{formatTime(duration || current?.duration)}</span></div></div>
+        <div className="player-tools"><div className="play-mode-group" aria-label="播放模式"><button className={playMode === "repeat-all" ? "active" : ""} onClick={() => setPlaybackMode("repeat-all")} aria-label="列表循环" title="列表循环"><Repeat2 size={18} /></button><button className={playMode === "shuffle" ? "active" : ""} onClick={() => setPlaybackMode("shuffle")} aria-label="随机播放" title="随机播放"><Shuffle size={18} /></button><button className={playMode === "repeat-one" ? "active" : ""} onClick={() => setPlaybackMode("repeat-one")} aria-label="单曲循环" title="单曲循环"><span className="repeat-mode-icon"><Repeat2 size={18} /><b>1</b></span></button></div><button aria-label="音量"><Volume2 size={18} /></button><input type="range" min="0" max="1" step="0.05" defaultValue="0.8" onChange={(event) => { if (audioRef.current) audioRef.current.volume = Number(event.target.value); }} aria-label="音量" /></div>
       </footer>
 
       {isSettingsOpen && <div className="modal-layer" role="dialog" aria-modal="true" aria-labelledby="settings-title"><button className="modal-backdrop" onClick={() => setIsSettingsOpen(false)} aria-label="关闭设置" /><form className="settings-modal" onSubmit={saveApiKey}><div className="modal-heading"><div><span className="modal-icon"><KeyRound size={20} /></span><div><h2 id="settings-title">连接 ChKSz API</h2><p>Key 仅保存于当前浏览器。</p></div></div><button type="button" onClick={() => setIsSettingsOpen(false)} aria-label="关闭"><X size={20} /></button></div><label>个人 API Key<input type="password" value={keyDraft} onChange={(event) => setKeyDraft(event.target.value)} placeholder="chksz_..." autoFocus /></label><p className="modal-help">在 ChKSz 账户页创建并复制你的个人 Key。请勿将 Key 提交到代码仓库或分享给第三方。</p><div className="modal-actions"><a href="https://api.chksz.com/login" target="_blank" rel="noreferrer">前往获取 Key</a><button type="submit">保存连接</button></div></form></div>}
