@@ -33,6 +33,9 @@ const apiBase = import.meta.env.DEV
   ? "/chksz-api"
   : import.meta.env.VITE_CHKSZ_API_BASE || "https://api.chksz.com";
 
+const REQUEST_TIMEOUT_MS = 12_000;
+const RETRY_DELAY_MS = 700;
+
 const sourceLabels: Record<MusicSource, string> = {
   netease: "网易云",
   qq: "QQ 音乐",
@@ -92,6 +95,36 @@ const normalizeTrack = (item: Record<string, unknown>, source: MusicSource, inde
   };
 };
 
+const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+async function fetchWithRetry(url: string) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      if (response.status === 503 && attempt === 0) {
+        await wait(RETRY_DELAY_MS);
+        continue;
+      }
+      return response;
+    } catch (reason) {
+      if (attempt === 0) {
+        await wait(RETRY_DELAY_MS);
+        continue;
+      }
+      const timedOut = reason instanceof DOMException && reason.name === "AbortError";
+      throw new ChkszApiError(
+        timedOut ? "音乐服务响应超时，请稍后重试。" : "网络连接暂时中断，请检查网络后重试。",
+        0,
+      );
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+  throw new ChkszApiError("音乐服务暂时不可用，请稍后重试。", 0);
+}
+
 async function request(path: string, params: Record<string, string | number | undefined>, apiKey: string) {
   if (!apiKey.trim()) throw new ChkszApiError("请先在设置中填写 ChKSz API Key。", 401);
   const search = new URLSearchParams({ apikey: apiKey.trim() });
@@ -99,7 +132,7 @@ async function request(path: string, params: Record<string, string | number | un
     if (value !== undefined && value !== "") search.set(key, String(value));
   });
 
-  const response = await fetch(`${apiBase}${path}?${search.toString()}`);
+  const response = await fetchWithRetry(`${apiBase}${path}?${search.toString()}`);
   const raw = await response.text();
   let body: Record<string, unknown> = {};
   try {
