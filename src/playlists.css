@@ -59,6 +59,18 @@
   border-style: dashed;
 }
 
+.now-playing-actions {
+  flex: 0 0 auto;
+  display: flex !important;
+  align-items: center;
+  gap: 2px !important;
+  margin-left: auto;
+}
+
+.now-playing-actions button {
+  margin-left: 0;
+}
+
 @media (max-width: 720px) {
   .track-actions button:last-child {
     display: grid;
