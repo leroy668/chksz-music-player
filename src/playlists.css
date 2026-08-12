@@ -71,6 +71,10 @@
   margin-left: 0;
 }
 
+.track-main.without-cover {
+  gap: 0;
+}
+
 @media (max-width: 720px) {
   .track-actions button:last-child {
     display: grid;
