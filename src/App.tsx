@@ -19,6 +19,7 @@ import {
   Shuffle,
   SkipBack,
   SkipForward,
+  Trash2,
   Volume2,
   X,
 } from "lucide-react";
@@ -33,11 +34,19 @@ import {
   type Track,
 } from "./lib/musicApi";
 import importedSongsText from "./data/importedSongs.txt?raw";
+import "./playlists.css";
 
-type Page = "discover" | "library" | "imported";
+type Page = "discover" | "library" | "imported" | "playlist";
+
+type UserPlaylist = {
+  id: string;
+  name: string;
+  tracks: Track[];
+};
 
 const KEY_STORAGE = "soundfield-chksz-api-key";
 const FAVORITES_STORAGE = "soundfield-favorites";
+const PLAYLISTS_STORAGE = "soundfield-playlists";
 const DEFAULT_COVER = "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?auto=format&fit=crop&w=400&q=80";
 
 const importedTracks: Track[] = importedSongsText
@@ -88,6 +97,17 @@ export default function App() {
       return [];
     }
   });
+  const [userPlaylists, setUserPlaylists] = useState<UserPlaylist[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(PLAYLISTS_STORAGE) ?? "[]") as UserPlaylist[];
+    } catch {
+      return [];
+    }
+  });
+  const [selectedPlaylistId, setSelectedPlaylistId] = useState("");
+  const [playlistDraft, setPlaylistDraft] = useState("");
+  const [isPlaylistModalOpen, setIsPlaylistModalOpen] = useState(false);
+  const [trackToAdd, setTrackToAdd] = useState<Track | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
@@ -100,12 +120,17 @@ export default function App() {
   const [duration, setDuration] = useState(0);
   const audioRef = useRef<HTMLAudioElement>(null);
 
-  const displayTracks = page === "library" ? favorites : page === "imported" ? importedTracks : results;
+  const selectedPlaylist = userPlaylists.find((playlist) => playlist.id === selectedPlaylistId);
+  const displayTracks = page === "library" ? favorites : page === "imported" ? importedTracks : page === "playlist" ? selectedPlaylist?.tracks ?? [] : results;
   const isCurrentFavorite = Boolean(current && favorites.some((track) => track.source === current.source && track.id === current.id));
 
   useEffect(() => {
     localStorage.setItem(FAVORITES_STORAGE, JSON.stringify(favorites));
   }, [favorites]);
+
+  useEffect(() => {
+    localStorage.setItem(PLAYLISTS_STORAGE, JSON.stringify(userPlaylists));
+  }, [userPlaylists]);
 
   useEffect(() => {
     if (!current?.url || !audioRef.current) return;
@@ -192,6 +217,55 @@ export default function App() {
     );
   };
 
+  const openCreatePlaylist = (track?: Track) => {
+    setTrackToAdd(track ?? null);
+    setPlaylistDraft("");
+    setIsPlaylistModalOpen(true);
+  };
+
+  const createPlaylist = (event: FormEvent) => {
+    event.preventDefault();
+    const name = playlistDraft.trim();
+    if (!name) return;
+    const playlist: UserPlaylist = {
+      id: `playlist-${Date.now()}`,
+      name,
+      tracks: trackToAdd ? [trackToAdd] : [],
+    };
+    setUserPlaylists((previous) => [...previous, playlist]);
+    setSelectedPlaylistId(playlist.id);
+    setPage("playlist");
+    setNotice(trackToAdd ? `已创建“${name}”并添加 ${trackToAdd.name}` : `已创建歌单“${name}”`);
+    setIsPlaylistModalOpen(false);
+    setTrackToAdd(null);
+  };
+
+  const addTrackToPlaylist = (playlistId: string) => {
+    if (!trackToAdd) return;
+    const playlist = userPlaylists.find((item) => item.id === playlistId);
+    const exists = playlist?.tracks.some((item) => item.source === trackToAdd.source && item.id === trackToAdd.id);
+    if (exists) {
+      setNotice(`${trackToAdd.name} 已在“${playlist?.name}”中`);
+    } else {
+      setUserPlaylists((previous) => previous.map((item) => item.id === playlistId ? { ...item, tracks: [...item.tracks, trackToAdd] } : item));
+      setNotice(`已将 ${trackToAdd.name} 添加到“${playlist?.name}”`);
+    }
+    setTrackToAdd(null);
+  };
+
+  const removeTrackFromPlaylist = (track: Track) => {
+    setUserPlaylists((previous) => previous.map((playlist) => playlist.id === selectedPlaylistId ? { ...playlist, tracks: playlist.tracks.filter((item) => !(item.source === track.source && item.id === track.id)) } : playlist));
+    setNotice(`已从歌单移除 ${track.name}`);
+  };
+
+  const deleteSelectedPlaylist = () => {
+    if (!selectedPlaylist) return;
+    setUserPlaylists((previous) => previous.filter((playlist) => playlist.id !== selectedPlaylist.id));
+    setPage("discover");
+    setSelectedPlaylistId("");
+    setNotice(`已删除歌单“${selectedPlaylist.name}”`);
+  };
+
   const saveApiKey = (event: FormEvent) => {
     event.preventDefault();
     const next = keyDraft.trim();
@@ -228,9 +302,10 @@ export default function App() {
           <button className={page === "library" ? "active" : ""} onClick={() => { setPage("library"); setIsMobileNavOpen(false); }}><Library size={19} />我的音乐 <span>{favorites.length}</span></button>
         </nav>
         <div className="side-section">
-          <div className="side-section-heading"><span>歌单</span><button aria-label="新建歌单" title="新建歌单"><Plus size={16} /></button></div>
+          <div className="side-section-heading"><span>歌单</span><button onClick={() => openCreatePlaylist()} aria-label="新建歌单" title="新建歌单"><Plus size={16} /></button></div>
           <div className="playlist-list">
             <button className={page === "imported" ? "active" : ""} onClick={() => { setPage("imported"); setSource("qq"); setIsMobileNavOpen(false); }}><i className="gold" /><span>歌曲.txt 导入</span><small>{importedTracks.length}</small></button>
+            {userPlaylists.map((playlist, index) => <button key={playlist.id} className={page === "playlist" && selectedPlaylistId === playlist.id ? "active" : ""} onClick={() => { setSelectedPlaylistId(playlist.id); setPage("playlist"); setIsMobileNavOpen(false); }}><i className={index % 2 ? "blue" : "red"} /><span>{playlist.name}</span><small>{playlist.tracks.length}</small></button>)}
           </div>
         </div>
         <div className="side-bottom">
@@ -257,8 +332,8 @@ export default function App() {
           <section className="hero-area">
             <div>
               <p className="eyebrow">CHKSZ API MUSIC</p>
-              <h1>{page === "library" ? "我的音乐库" : page === "imported" ? "歌曲.txt 导入" : "此刻，听见更多"}</h1>
-              <p>{page === "library" ? "在这里播放和管理已收藏的歌曲。" : page === "imported" ? `已导入 ${importedTracks.length} 首 QQ 音乐，点击歌曲时自动搜索并播放。` : "连接你的 ChKSz API Key，搜索并播放多平台音乐。"}</p>
+              <h1>{page === "library" ? "我的音乐库" : page === "imported" ? "歌曲.txt 导入" : page === "playlist" ? selectedPlaylist?.name ?? "自建歌单" : "此刻，听见更多"}</h1>
+              <p>{page === "library" ? "在这里播放和管理已收藏的歌曲。" : page === "imported" ? `已导入 ${importedTracks.length} 首 QQ 音乐，点击歌曲时自动搜索并播放。` : page === "playlist" ? `${selectedPlaylist?.tracks.length ?? 0} 首歌曲，保存在当前浏览器。` : "连接你的 ChKSz API Key，搜索并播放多平台音乐。"}</p>
             </div>
             <div className="hero-visual" aria-hidden="true"><span /><span /><span /><span /><span /></div>
           </section>
@@ -275,11 +350,11 @@ export default function App() {
           {notice && <div className="message notice-message">{notice}</div>}
 
           <section className="results-section">
-            <div className="section-title"><div><h2>{page === "library" ? "收藏歌曲" : page === "imported" ? "QQ 音乐歌单" : results.length ? `“${query}” 的搜索结果` : "开始搜索"}</h2><p>{page === "library" ? `${favorites.length} 首已收藏` : page === "imported" ? `${importedTracks.length} 条记录，保留歌曲.txt 原始顺序` : results.length ? `${results.length} 首来自 ${getSourceLabel(source)}` : "输入关键词后，选择音乐源进行搜索"}</p></div><button aria-label="更多操作"><MoreHorizontal size={20} /></button></div>
+            <div className="section-title"><div><h2>{page === "library" ? "收藏歌曲" : page === "imported" ? "QQ 音乐歌单" : page === "playlist" ? selectedPlaylist?.name ?? "自建歌单" : results.length ? `“${query}” 的搜索结果` : "开始搜索"}</h2><p>{page === "library" ? `${favorites.length} 首已收藏` : page === "imported" ? `${importedTracks.length} 条记录，保留歌曲.txt 原始顺序` : page === "playlist" ? `${selectedPlaylist?.tracks.length ?? 0} 首歌曲` : results.length ? `${results.length} 首来自 ${getSourceLabel(source)}` : "输入关键词后，选择音乐源进行搜索"}</p></div>{page === "playlist" ? <button onClick={deleteSelectedPlaylist} aria-label="删除歌单" title="删除歌单"><Trash2 size={19} /></button> : <button aria-label="更多操作"><MoreHorizontal size={20} /></button>}</div>
             {isSearching ? <div className="loading-state"><LoaderCircle className="spin" size={27} /><span>正在检索音乐...</span></div> : displayTracks.length ? <div className="track-list">
               <div className="track-heading"><span>#</span><span>歌曲</span><span className="wide-only">专辑</span><span className="wide-only"><Clock3 size={15} /></span><span /></div>
-              {displayTracks.map((track, index) => <TrackRow key={`${track.source}-${track.id}-${index}`} track={track} index={index} active={current?.source === track.source && current?.id === track.id} favorite={favorites.some((item) => item.source === track.source && item.id === track.id)} playing={isPlaying} busy={isResolving} onPlay={() => void playTrack(track, index)} onFavorite={() => toggleFavorite(track)} />)}
-            </div> : <div className="empty-results"><Search size={26} /><strong>{page === "library" ? "还没有收藏歌曲" : "搜索你想听的音乐"}</strong><span>{page === "library" ? "在搜索结果中点击心形图标，即可收藏到这里。" : "支持网易云音乐、QQ 音乐和酷狗音乐。"}</span></div>}
+              {displayTracks.map((track, index) => <TrackRow key={`${track.source}-${track.id}-${index}`} track={track} index={index} active={current?.source === track.source && current?.id === track.id} favorite={favorites.some((item) => item.source === track.source && item.id === track.id)} playing={isPlaying} busy={isResolving} inUserPlaylist={page === "playlist"} onPlay={() => void playTrack(track, index)} onFavorite={() => toggleFavorite(track)} onPlaylistAction={() => page === "playlist" ? removeTrackFromPlaylist(track) : setTrackToAdd(track)} />)}
+            </div> : <div className="empty-results"><Search size={26} /><strong>{page === "library" ? "还没有收藏歌曲" : page === "playlist" ? "这个歌单还是空的" : "搜索你想听的音乐"}</strong><span>{page === "library" ? "在搜索结果中点击心形图标，即可收藏到这里。" : page === "playlist" ? "在搜索结果或导入歌单中点击加号添加歌曲。" : "支持网易云音乐、QQ 音乐和酷狗音乐。"}</span></div>}
           </section>
 
           <section className="lower-grid">
@@ -303,12 +378,14 @@ export default function App() {
       </footer>
 
       {isSettingsOpen && <div className="modal-layer" role="dialog" aria-modal="true" aria-labelledby="settings-title"><button className="modal-backdrop" onClick={() => setIsSettingsOpen(false)} aria-label="关闭设置" /><form className="settings-modal" onSubmit={saveApiKey}><div className="modal-heading"><div><span className="modal-icon"><KeyRound size={20} /></span><div><h2 id="settings-title">连接 ChKSz API</h2><p>Key 仅保存于当前浏览器。</p></div></div><button type="button" onClick={() => setIsSettingsOpen(false)} aria-label="关闭"><X size={20} /></button></div><label>个人 API Key<input type="password" value={keyDraft} onChange={(event) => setKeyDraft(event.target.value)} placeholder="chksz_..." autoFocus /></label><p className="modal-help">在 ChKSz 账户页创建并复制你的个人 Key。请勿将 Key 提交到代码仓库或分享给第三方。</p><div className="modal-actions"><a href="https://api.chksz.com/login" target="_blank" rel="noreferrer">前往获取 Key</a><button type="submit">保存连接</button></div></form></div>}
+      {isPlaylistModalOpen && <div className="modal-layer" role="dialog" aria-modal="true" aria-labelledby="playlist-title"><button className="modal-backdrop" onClick={() => setIsPlaylistModalOpen(false)} aria-label="关闭新建歌单" /><form className="settings-modal" onSubmit={createPlaylist}><div className="modal-heading"><div><span className="modal-icon playlist-modal-icon"><ListMusic size={20} /></span><div><h2 id="playlist-title">新建歌单</h2><p>{trackToAdd ? `创建后添加 ${trackToAdd.name}` : "歌单保存在当前浏览器。"}</p></div></div><button type="button" onClick={() => setIsPlaylistModalOpen(false)} aria-label="关闭"><X size={20} /></button></div><label>歌单名称<input value={playlistDraft} onChange={(event) => setPlaylistDraft(event.target.value)} placeholder="例如：通勤播放" maxLength={30} autoFocus /></label><div className="modal-actions modal-actions-end"><button type="submit" disabled={!playlistDraft.trim()}>创建歌单</button></div></form></div>}
+      {trackToAdd && !isPlaylistModalOpen && <div className="modal-layer" role="dialog" aria-modal="true" aria-labelledby="add-playlist-title"><button className="modal-backdrop" onClick={() => setTrackToAdd(null)} aria-label="关闭添加到歌单" /><section className="settings-modal"><div className="modal-heading"><div><span className="modal-icon playlist-modal-icon"><Plus size={20} /></span><div><h2 id="add-playlist-title">添加到歌单</h2><p>{trackToAdd.name} · {trackToAdd.singer}</p></div></div><button type="button" onClick={() => setTrackToAdd(null)} aria-label="关闭"><X size={20} /></button></div><div className="playlist-picker">{userPlaylists.map((playlist) => <button key={playlist.id} onClick={() => addTrackToPlaylist(playlist.id)}><span><ListMusic size={17} /><strong>{playlist.name}</strong></span><small>{playlist.tracks.length} 首</small></button>)}<button className="create-playlist-option" onClick={() => openCreatePlaylist(trackToAdd)}><span><Plus size={17} /><strong>新建歌单</strong></span></button></div></section></div>}
     </main>
   );
 }
 
-function TrackRow({ track, index, active, favorite, playing, busy, onPlay, onFavorite }: { track: Track; index: number; active: boolean; favorite: boolean; playing: boolean; busy: boolean; onPlay: () => void; onFavorite: () => void }) {
-  return <article className={`track-row ${active ? "is-active" : ""}`}><button className="index-button" onClick={onPlay} disabled={busy} aria-label={`播放 ${track.name}`}>{active && playing ? <span className="mini-eq"><i /><i /><i /></span> : <><span className="track-index">{String(index + 1).padStart(2, "0")}</span><Play className="track-play" size={16} fill="currentColor" /></>}</button><button className="track-main" onClick={onPlay} disabled={busy}><img src={track.cover || DEFAULT_COVER} alt="" /><span><strong>{track.name}</strong><small>{track.singer} · {getSourceLabel(track.source)}</small></span></button><span className="track-album wide-only">{track.album}</span><time className="wide-only">{formatTime(track.duration)}</time><div className="track-actions"><button className={favorite ? "liked" : ""} onClick={onFavorite} aria-label={favorite ? "取消收藏" : "收藏"}><Heart size={17} fill={favorite ? "currentColor" : "none"} /></button><button aria-label="更多操作"><MoreHorizontal size={18} /></button></div></article>;
+function TrackRow({ track, index, active, favorite, playing, busy, inUserPlaylist, onPlay, onFavorite, onPlaylistAction }: { track: Track; index: number; active: boolean; favorite: boolean; playing: boolean; busy: boolean; inUserPlaylist: boolean; onPlay: () => void; onFavorite: () => void; onPlaylistAction: () => void }) {
+  return <article className={`track-row ${active ? "is-active" : ""}`}><button className="index-button" onClick={onPlay} disabled={busy} aria-label={`播放 ${track.name}`}>{active && playing ? <span className="mini-eq"><i /><i /><i /></span> : <><span className="track-index">{String(index + 1).padStart(2, "0")}</span><Play className="track-play" size={16} fill="currentColor" /></>}</button><button className="track-main" onClick={onPlay} disabled={busy}><img src={track.cover || DEFAULT_COVER} alt="" /><span><strong>{track.name}</strong><small>{track.singer} · {getSourceLabel(track.source)}</small></span></button><span className="track-album wide-only">{track.album}</span><time className="wide-only">{formatTime(track.duration)}</time><div className="track-actions"><button className={favorite ? "liked" : ""} onClick={onFavorite} aria-label={favorite ? "取消收藏" : "收藏"}><Heart size={17} fill={favorite ? "currentColor" : "none"} /></button><button onClick={onPlaylistAction} aria-label={inUserPlaylist ? "从歌单移除" : "添加到歌单"} title={inUserPlaylist ? "从歌单移除" : "添加到歌单"}>{inUserPlaylist ? <X size={17} /> : <Plus size={17} />}</button></div></article>;
 }
 
 function apiErrorMessage(reason: unknown) {
