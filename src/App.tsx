@@ -119,6 +119,7 @@ export default function App() {
   const [isSearching, setIsSearching] = useState(false);
   const [isResolving, setIsResolving] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [lyric, setLyric] = useState("");
@@ -131,6 +132,11 @@ export default function App() {
   const audioRef = useRef<HTMLAudioElement>(null);
   const resolveInFlightRef = useRef(false);
   const resolvedTracksRef = useRef(new Map<string, Track>());
+  const prefetchedTracksRef = useRef(new Set<string>());
+  const playbackIntentRef = useRef(false);
+  const failedStreamRef = useRef("");
+  const streamRecoveryInFlightRef = useRef(false);
+  const lastPositionUpdateRef = useRef(0);
 
   const selectedPlaylist = userPlaylists.find((playlist) => playlist.id === selectedPlaylistId);
   const displayTracks = page === "library" ? favorites : page === "imported" ? importedTracks : page === "playlist" ? selectedPlaylist?.tracks ?? [] : results;
@@ -150,12 +156,27 @@ export default function App() {
 
   useEffect(() => {
     if (!current?.url || !audioRef.current) return;
-    audioRef.current.src = current.url;
-    audioRef.current.load();
+    const audio = audioRef.current;
+    audio.src = current.url;
+    audio.load();
     setPosition(0);
     setDuration(0);
-    audioRef.current.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+    playbackIntentRef.current = true;
+    void audio.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
   }, [current?.url]);
+
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+    navigator.mediaSession.metadata = current
+      ? new MediaMetadata({
+        title: current.name,
+        artist: current.singer,
+        album: current.album,
+        artwork: current.cover ? [{ src: current.cover }] : [],
+      })
+      : null;
+    navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
+  }, [current, isPlaying]);
 
   useEffect(() => {
     if (!current || !apiKey) {
@@ -185,8 +206,8 @@ export default function App() {
     }
   };
 
-  const playTrack = async (track: Track, index: number, sourceQueue = displayTracks) => {
-    if (resolveInFlightRef.current) return;
+  const playTrack = async (track: Track, index: number, sourceQueue = displayTracks): Promise<boolean> => {
+    if (resolveInFlightRef.current) return false;
     resolveInFlightRef.current = true;
     setError("");
     setNotice("");
@@ -203,9 +224,12 @@ export default function App() {
         return next.length ? next : previous;
       });
       setIsPlaying(true);
+      playbackIntentRef.current = true;
       if (index >= 0) setNotice(`正在播放 ${resolved.name}`);
+      return true;
     } catch (reason) {
       setError(apiErrorMessage(reason));
+      return false;
     } finally {
       resolveInFlightRef.current = false;
       setIsResolving(false);
@@ -215,32 +239,114 @@ export default function App() {
   const togglePlay = () => {
     const audio = audioRef.current;
     if (!audio || !current) return;
-    if (audio.paused) audio.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+    if (audio.paused) {
+      playbackIntentRef.current = true;
+      void audio.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+    }
     else {
+      playbackIntentRef.current = false;
       audio.pause();
       setIsPlaying(false);
     }
   };
 
-  const stepTrack = (direction: 1 | -1, automatic = false) => {
+  const prefetchNextTrack = () => {
+    if (!current || !apiKey || resolveInFlightRef.current) return;
+    const activeQueue = queue.length ? queue : displayTracks;
+    const currentIndex = activeQueue.findIndex((track) => track.source === current.source && track.id === current.id);
+    if (currentIndex < 0 || activeQueue.length < 2) return;
+    const next = activeQueue[(currentIndex + 1) % activeQueue.length];
+    const cacheKey = `${next.source}:${next.id}`;
+    if (next.url || resolvedTracksRef.current.has(cacheKey) || prefetchedTracksRef.current.has(cacheKey)) return;
+    prefetchedTracksRef.current.add(cacheKey);
+    void resolveTrack(next, apiKey)
+      .then((resolved) => resolvedTracksRef.current.set(cacheKey, resolved))
+      .catch(() => undefined)
+      .finally(() => prefetchedTracksRef.current.delete(cacheKey));
+  };
+
+  const stepTrack = async (direction: 1 | -1, automatic = false, failedAttempts = 0) => {
     if (resolveInFlightRef.current) return;
     const activeQueue = queue.length ? queue : displayTracks;
     if (!activeQueue.length) return;
     if (automatic && playMode === "repeat-one" && audioRef.current) {
       audioRef.current.currentTime = 0;
-      audioRef.current.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+      playbackIntentRef.current = true;
+      void audioRef.current.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
       return;
     }
     const activeIndex = current
       ? activeQueue.findIndex((track) => track.source === current.source && track.id === current.id)
       : -1;
-    let nextIndex = (activeIndex + direction + activeQueue.length) % activeQueue.length;
+    let nextIndex = (activeIndex + direction * (failedAttempts + 1) + activeQueue.length * (failedAttempts + 1)) % activeQueue.length;
     if (playMode === "shuffle" && activeQueue.length > 1) {
       do nextIndex = Math.floor(Math.random() * activeQueue.length);
       while (nextIndex === activeIndex);
     }
-    void playTrack(activeQueue[nextIndex], nextIndex, activeQueue);
+    const started = await playTrack(activeQueue[nextIndex], nextIndex, activeQueue);
+    if (!started && automatic && failedAttempts < Math.min(activeQueue.length - 1, 3)) {
+      await stepTrack(direction, true, failedAttempts + 1);
+    }
   };
+
+  const recoverCurrentStream = async () => {
+    if (!current || !apiKey || streamRecoveryInFlightRef.current) return;
+    const failedStreamKey = `${current.source}:${current.id}:${current.url}`;
+    if (failedStreamRef.current === failedStreamKey) {
+      void stepTrack(1, true);
+      return;
+    }
+    failedStreamRef.current = failedStreamKey;
+    streamRecoveryInFlightRef.current = true;
+    setIsBuffering(true);
+    try {
+      const refreshed = await resolveTrack({ ...current, url: undefined }, apiKey);
+      if (!refreshed.url) throw new Error("未获取到新的播放地址。");
+      resolvedTracksRef.current.set(`${refreshed.source}:${refreshed.id}`, refreshed);
+      setCurrent(refreshed);
+      setQueue((previous) => previous.map((item) => item.source === refreshed.source && item.id === refreshed.id ? refreshed : item));
+      setNotice("播放地址已刷新，正在继续播放。");
+    } catch {
+      setError("当前歌曲播放地址已失效，已自动尝试下一首歌曲。");
+      void stepTrack(1, true);
+    } finally {
+      streamRecoveryInFlightRef.current = false;
+    }
+  };
+
+  useEffect(() => {
+    prefetchNextTrack();
+  }, [current?.url]);
+
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+    const setAction = (action: MediaSessionAction, handler: MediaSessionActionHandler) => {
+      try {
+        navigator.mediaSession.setActionHandler(action, handler);
+      } catch {
+        // Some mobile browsers implement only a subset of Media Session actions.
+      }
+    };
+    setAction("play", () => {
+      playbackIntentRef.current = true;
+      void audioRef.current?.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+    });
+    setAction("pause", () => {
+      playbackIntentRef.current = false;
+      audioRef.current?.pause();
+    });
+    setAction("previoustrack", () => { void stepTrack(-1); });
+    setAction("nexttrack", () => { void stepTrack(1); });
+    return () => {
+      (["play", "pause", "previoustrack", "nexttrack"] as MediaSessionAction[]).forEach((action) => {
+        try {
+          navigator.mediaSession.setActionHandler(action, null);
+        } catch {
+          // Keep cleanup compatible with partial Media Session implementations.
+        }
+      });
+    };
+  }, [current, queue, playMode]);
 
   const setPlaybackMode = (mode: PlayMode) => {
     setPlayMode(mode);
@@ -438,8 +544,30 @@ export default function App() {
       </section>
 
       <footer className="player-bar">
-        <audio ref={audioRef} onTimeUpdate={(event) => setPosition(event.currentTarget.currentTime)} onDurationChange={(event) => setDuration(event.currentTarget.duration)} onEnded={() => stepTrack(1, true)} onPlay={() => setIsPlaying(true)} onPause={() => setIsPlaying(false)} />
-        <div className="now-playing"><img src={current?.cover || DEFAULT_COVER} alt="" /><div><strong>{current?.name || "还没有播放歌曲"}</strong><small>{current ? `${current.singer} · ${current.album}` : "选择一首歌曲开始聆听"}</small></div><div className="now-playing-actions"><button className={isCurrentFavorite ? "liked" : ""} onClick={() => current && toggleFavorite(current)} disabled={!current} aria-label="收藏当前歌曲" title="收藏"><Heart size={18} fill={isCurrentFavorite ? "currentColor" : "none"} /></button><button onClick={() => { if (current) { setIsMoveDialog(false); setMoveFromPlaylistId(""); setTrackToAdd(current); } }} disabled={!current} aria-label="将当前歌曲添加到歌单" title="添加到歌单"><Plus size={18} /></button><button onClick={() => current && openMovePlaylist(current, page === "playlist" ? selectedPlaylistId : "")} disabled={!current} aria-label="将当前歌曲移动到歌单" title="移动到歌单"><ArrowRightLeft size={18} /></button></div></div>
+        <audio
+          ref={audioRef}
+          preload="auto"
+          playsInline
+          onTimeUpdate={(event) => {
+            const now = Date.now();
+            if (now - lastPositionUpdateRef.current < 750) return;
+            lastPositionUpdateRef.current = now;
+            setPosition(event.currentTarget.currentTime);
+          }}
+          onDurationChange={(event) => setDuration(event.currentTarget.duration)}
+          onWaiting={(event) => { if (!event.currentTarget.paused) setIsBuffering(true); }}
+          onStalled={() => setIsBuffering(true)}
+          onCanPlay={() => {
+            setIsBuffering(false);
+            const audio = audioRef.current;
+            if (audio?.paused && playbackIntentRef.current) void audio.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+          }}
+          onEnded={() => { failedStreamRef.current = ""; void stepTrack(1, true); }}
+          onError={() => { if (playbackIntentRef.current) void recoverCurrentStream(); }}
+          onPlay={() => { setIsPlaying(true); setIsBuffering(false); }}
+          onPause={() => setIsPlaying(false)}
+        />
+        <div className="now-playing"><img src={current?.cover || DEFAULT_COVER} alt="" /><div><strong>{current?.name || "还没有播放歌曲"}</strong><small>{current ? `${current.singer} · ${current.album}${isBuffering ? " · 正在缓冲" : ""}` : "选择一首歌曲开始聆听"}</small></div><div className="now-playing-actions"><button className={isCurrentFavorite ? "liked" : ""} onClick={() => current && toggleFavorite(current)} disabled={!current} aria-label="收藏当前歌曲" title="收藏"><Heart size={18} fill={isCurrentFavorite ? "currentColor" : "none"} /></button><button onClick={() => { if (current) { setIsMoveDialog(false); setMoveFromPlaylistId(""); setTrackToAdd(current); } }} disabled={!current} aria-label="将当前歌曲添加到歌单" title="添加到歌单"><Plus size={18} /></button><button onClick={() => current && openMovePlaylist(current, page === "playlist" ? selectedPlaylistId : "")} disabled={!current} aria-label="将当前歌曲移动到歌单" title="移动到歌单"><ArrowRightLeft size={18} /></button></div></div>
         <div className="play-controls"><div><button className={`mobile-mode-button ${playMode !== "repeat-all" ? "active" : ""}`} onClick={cyclePlaybackMode} aria-label={`当前为${playMode === "shuffle" ? "随机播放" : playMode === "repeat-one" ? "单曲循环" : "列表循环"}，点击切换`} title={playMode === "shuffle" ? "随机播放" : playMode === "repeat-one" ? "单曲循环" : "列表循环"}>{playMode === "shuffle" ? <Shuffle size={18} /> : <span className="repeat-mode-icon"><Repeat2 size={18} />{playMode === "repeat-one" && <b>1</b>}</span>}</button><button onClick={() => stepTrack(-1)} disabled={isResolving || (!queue.length && !displayTracks.length)} aria-label="上一首"><SkipBack size={19} fill="currentColor" /></button><button className="play-button" onClick={togglePlay} disabled={!current} aria-label={isPlaying ? "暂停" : "播放"}>{isPlaying ? <Pause size={21} fill="currentColor" /> : <Play size={21} fill="currentColor" />}</button><button onClick={() => stepTrack(1)} disabled={isResolving || (!queue.length && !displayTracks.length)} aria-label="下一首"><SkipForward size={19} fill="currentColor" /></button></div><div className="progress-row"><span>{formatTime(position)}</span><input type="range" min="0" max={duration || current?.duration || 0} value={Math.min(position, duration || current?.duration || 0)} onChange={(event) => { const next = Number(event.target.value); if (audioRef.current) audioRef.current.currentTime = next; setPosition(next); }} disabled={!current} aria-label="播放进度" /><span>{formatTime(duration || current?.duration)}</span></div></div>
         <div className="player-tools"><div className="play-mode-group" aria-label="播放模式"><button className={playMode === "repeat-all" ? "active" : ""} onClick={() => setPlaybackMode("repeat-all")} aria-label="列表循环" title="列表循环"><Repeat2 size={18} /></button><button className={playMode === "shuffle" ? "active" : ""} onClick={() => setPlaybackMode("shuffle")} aria-label="随机播放" title="随机播放"><Shuffle size={18} /></button><button className={playMode === "repeat-one" ? "active" : ""} onClick={() => setPlaybackMode("repeat-one")} aria-label="单曲循环" title="单曲循环"><span className="repeat-mode-icon"><Repeat2 size={18} /><b>1</b></span></button></div><button aria-label="音量"><Volume2 size={18} /></button><input type="range" min="0" max="1" step="0.05" defaultValue="0.8" onChange={(event) => { if (audioRef.current) audioRef.current.volume = Number(event.target.value); }} aria-label="音量" /></div>
       </footer>
