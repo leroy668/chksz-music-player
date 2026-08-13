@@ -26,16 +26,16 @@ import {
   Volume2,
   X,
 } from "lucide-react";
-import type { User } from "@supabase/supabase-js";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   cloudEnabled,
-  getCloudUser,
+  getCloudAccount,
   loadCloudLibrary,
+  loginCloud,
+  registerCloud,
   saveCloudLibrary,
-  sendLoginLink,
   signOutCloud,
-  supabase,
+  type CloudAccount,
 } from "./lib/cloudLibrary";
 import {
   ChkszApiError,
@@ -149,8 +149,10 @@ export default function App() {
   const [isMoveDialog, setIsMoveDialog] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAccountOpen, setIsAccountOpen] = useState(false);
-  const [accountEmail, setAccountEmail] = useState("");
-  const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [accountUsername, setAccountUsername] = useState("");
+  const [accountPassword, setAccountPassword] = useState("");
+  const [accountMode, setAccountMode] = useState<"login" | "register">("login");
+  const [cloudAccount, setCloudAccount] = useState<CloudAccount | null>(null);
   const [cloudStatus, setCloudStatus] = useState<"idle" | "loading" | "saving" | "synced" | "error">("idle");
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
@@ -175,7 +177,7 @@ export default function App() {
   const streamRecoveryInFlightRef = useRef(false);
   const lastPositionUpdateRef = useRef(0);
   const cloudReadyRef = useRef(false);
-  const cloudUserIdRef = useRef("");
+  const cloudUsernameRef = useRef("");
   const cloudSaveChainRef = useRef<Promise<void>>(Promise.resolve());
 
   const selectedPlaylist = userPlaylists.find((playlist) => playlist.id === selectedPlaylistId);
@@ -195,24 +197,23 @@ export default function App() {
   }, [playMode]);
 
   useEffect(() => {
-    if (!supabase) return;
     let active = true;
 
-    const hydrateCloudLibrary = async (user: User | null) => {
+    const hydrateCloudLibrary = async (account: CloudAccount | null) => {
       if (!active) return;
-      setCloudUser(user);
-      if (!user) {
+      setCloudAccount(account);
+      if (!account) {
         cloudReadyRef.current = false;
-        cloudUserIdRef.current = "";
+        cloudUsernameRef.current = "";
         setCloudStatus("idle");
         return;
       }
-      if (cloudUserIdRef.current === user.id && cloudReadyRef.current) return;
+      if (cloudUsernameRef.current === account.username && cloudReadyRef.current) return;
       cloudReadyRef.current = false;
-      cloudUserIdRef.current = user.id;
+      cloudUsernameRef.current = account.username;
       setCloudStatus("loading");
       try {
-        const remote = await loadCloudLibrary(user.id);
+        const remote = await loadCloudLibrary();
         if (!active) return;
         if (remote) {
           const mergedFavorites = mergeTracks(remote.favorites, favorites);
@@ -220,13 +221,13 @@ export default function App() {
           setFavorites(mergedFavorites);
           setUserPlaylists(mergedPlaylists);
           setPlayMode(remote.playMode);
-          await saveCloudLibrary(user.id, {
+          await saveCloudLibrary({
             favorites: mergedFavorites,
             playlists: mergedPlaylists,
             playMode: remote.playMode,
           });
         } else {
-          await saveCloudLibrary(user.id, { favorites, playlists: userPlaylists, playMode });
+          await saveCloudLibrary({ favorites, playlists: userPlaylists, playMode });
         }
         cloudReadyRef.current = true;
         setCloudStatus("synced");
@@ -236,24 +237,20 @@ export default function App() {
       }
     };
 
-    void getCloudUser().then(hydrateCloudLibrary).catch((reason) => {
+    void getCloudAccount().then(hydrateCloudLibrary).catch((reason) => {
       setCloudStatus("error");
       setError(reason instanceof Error ? `账号连接失败：${reason.message}` : "账号连接失败。");
     });
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-      void hydrateCloudLibrary(session?.user ?? null);
-    });
     return () => {
       active = false;
-      data.subscription.unsubscribe();
     };
   }, []);
 
   useEffect(() => {
-    if (!cloudUser || !cloudReadyRef.current) return;
+    if (!cloudAccount || !cloudReadyRef.current) return;
     setCloudStatus("saving");
     const snapshot = { favorites, playlists: userPlaylists, playMode };
-    const save = cloudSaveChainRef.current.then(() => saveCloudLibrary(cloudUser.id, snapshot));
+    const save = cloudSaveChainRef.current.then(() => saveCloudLibrary(snapshot));
     cloudSaveChainRef.current = save.catch(() => undefined);
     void save
       .then(() => setCloudStatus("synced"))
@@ -261,7 +258,7 @@ export default function App() {
         setCloudStatus("error");
         setError(reason instanceof Error ? `云同步失败：${reason.message}` : "云同步失败，请稍后重试。");
       });
-  }, [cloudUser, favorites, userPlaylists, playMode]);
+  }, [cloudAccount, favorites, userPlaylists, playMode]);
 
   useEffect(() => {
     if (!current?.url || !audioRef.current) return;
@@ -565,18 +562,22 @@ export default function App() {
 
   const requestLogin = async (event: FormEvent) => {
     event.preventDefault();
-    const email = accountEmail.trim();
-    if (!email) return;
+    const username = accountUsername.trim();
+    if (!username || accountPassword.length < 8) return;
     setCloudStatus("loading");
     setError("");
     try {
-      await sendLoginLink(email);
-      setNotice(`登录链接已发送到 ${email}，请在邮件中确认。`);
-      setCloudStatus("idle");
+      const account = accountMode === "register"
+        ? await registerCloud(username, accountPassword)
+        : await loginCloud(username, accountPassword);
+      setCloudAccount(account);
+      setNotice(accountMode === "register" ? `账号“${account.username}”已创建并登录。` : `已登录账号“${account.username}”。`);
+      setAccountPassword("");
       setIsAccountOpen(false);
+      window.location.reload();
     } catch (reason) {
       setCloudStatus("error");
-      setError(reason instanceof Error ? `发送登录链接失败：${reason.message}` : "发送登录链接失败。");
+      setError(reason instanceof Error ? `账号操作失败：${reason.message}` : "账号操作失败，请稍后重试。");
     }
   };
 
@@ -584,6 +585,9 @@ export default function App() {
     try {
       await signOutCloud();
       setNotice("已退出云同步账号，本机数据仍会保留。");
+      setCloudAccount(null);
+      cloudReadyRef.current = false;
+      cloudUsernameRef.current = "";
       setIsAccountOpen(false);
     } catch (reason) {
       setError(reason instanceof Error ? `退出失败：${reason.message}` : "退出失败。");
@@ -618,7 +622,7 @@ export default function App() {
           </div>
         </div>
         <div className="side-bottom">
-          <button className="api-key-button" onClick={() => setIsAccountOpen(true)} title={cloudUser?.email ?? "登录同步歌单"}><Cloud size={17} /><span>{cloudUser ? cloudStatus === "saving" ? "正在同步" : cloudStatus === "error" ? "同步异常" : `已同步 · ${cloudUser.email ?? "当前账号"}` : cloudEnabled ? "登录同步歌单" : "云同步待配置"}</span></button>
+          <button className="api-key-button" onClick={() => setIsAccountOpen(true)} title={cloudAccount?.username ?? "登录同步歌单"}><Cloud size={17} /><span>{cloudAccount ? cloudStatus === "saving" ? "正在同步" : cloudStatus === "error" ? "同步异常" : `已同步 · ${cloudAccount.username}` : cloudEnabled ? "登录同步歌单" : "云同步待配置"}</span></button>
           <button className="api-key-button" onClick={() => setIsSettingsOpen(true)}><KeyRound size={17} /><span>{apiKey ? "API Key 已连接" : "连接 ChKSz API"}</span></button>
           <a href="https://api.chksz.com/login" target="_blank" rel="noreferrer">获取 API Key <ChevronRight size={15} /></a>
         </div>
@@ -710,7 +714,7 @@ export default function App() {
       </footer>
 
       {isSettingsOpen && <div className="modal-layer" role="dialog" aria-modal="true" aria-labelledby="settings-title"><button className="modal-backdrop" onClick={() => setIsSettingsOpen(false)} aria-label="关闭设置" /><form className="settings-modal" onSubmit={saveApiKey}><div className="modal-heading"><div><span className="modal-icon"><KeyRound size={20} /></span><div><h2 id="settings-title">连接 ChKSz API</h2><p>Key 仅保存于当前浏览器。</p></div></div><button type="button" onClick={() => setIsSettingsOpen(false)} aria-label="关闭"><X size={20} /></button></div><label>个人 API Key<input type="password" value={keyDraft} onChange={(event) => setKeyDraft(event.target.value)} placeholder="chksz_..." autoFocus /></label><p className="modal-help">在 ChKSz 账户页创建并复制你的个人 Key。请勿将 Key 提交到代码仓库或分享给第三方。</p><div className="modal-actions"><a href="https://api.chksz.com/login" target="_blank" rel="noreferrer">前往获取 Key</a><button type="submit">保存连接</button></div></form></div>}
-      {isAccountOpen && <div className="modal-layer" role="dialog" aria-modal="true" aria-labelledby="account-title"><button className="modal-backdrop" onClick={() => setIsAccountOpen(false)} aria-label="关闭账号" /><section className="settings-modal"><div className="modal-heading"><div><span className="modal-icon cloud-modal-icon"><Cloud size={20} /></span><div><h2 id="account-title">歌单云同步</h2><p>{cloudUser ? "已连接账号，修改会自动保存。" : "使用同一邮箱在不同设备登录。"}</p></div></div><button type="button" onClick={() => setIsAccountOpen(false)} aria-label="关闭"><X size={20} /></button></div>{!cloudEnabled ? <p className="modal-help account-message">云数据库连接参数尚未配置。</p> : cloudUser ? <div className="account-panel"><span>当前账号</span><strong>{cloudUser.email}</strong><small>{cloudStatus === "saving" ? "正在保存修改..." : cloudStatus === "error" ? "同步异常，请检查网络。" : "收藏、歌单和播放模式已同步"}</small><button type="button" className="logout-button" onClick={() => void logoutCloud()}><LogOut size={17} />退出账号</button></div> : <form onSubmit={requestLogin}><label>邮箱地址<input type="email" value={accountEmail} onChange={(event) => setAccountEmail(event.target.value)} placeholder="name@example.com" autoComplete="email" autoFocus /></label><p className="modal-help">点击后会收到登录链接，不需要设置密码。首次登录会把当前设备的收藏和自建歌单保存到云端。</p><div className="modal-actions modal-actions-end"><button type="submit" disabled={!accountEmail.trim() || cloudStatus === "loading"}>{cloudStatus === "loading" ? "正在发送" : "发送登录链接"}</button></div></form>}</section></div>}
+      {isAccountOpen && <div className="modal-layer" role="dialog" aria-modal="true" aria-labelledby="account-title"><button className="modal-backdrop" onClick={() => setIsAccountOpen(false)} aria-label="关闭账号" /><section className="settings-modal"><div className="modal-heading"><div><span className="modal-icon cloud-modal-icon"><Cloud size={20} /></span><div><h2 id="account-title">歌单云同步</h2><p>{cloudAccount ? "已连接账号，修改会自动保存。" : "使用同一账号在不同设备登录。"}</p></div></div><button type="button" onClick={() => setIsAccountOpen(false)} aria-label="关闭"><X size={20} /></button></div>{!cloudEnabled ? <p className="modal-help account-message">云数据库连接参数尚未配置。</p> : cloudAccount ? <div className="account-panel"><span>当前账号</span><strong>{cloudAccount.username}</strong><small>{cloudStatus === "saving" ? "正在保存修改..." : cloudStatus === "error" ? "同步异常，请检查网络。" : "收藏、歌单和播放模式已同步"}</small><button type="button" className="logout-button" onClick={() => void logoutCloud()}><LogOut size={17} />退出账号</button></div> : <form onSubmit={requestLogin}><div className="account-mode" aria-label="账号操作"><button type="button" className={accountMode === "login" ? "active" : ""} onClick={() => setAccountMode("login")}>登录</button><button type="button" className={accountMode === "register" ? "active" : ""} onClick={() => setAccountMode("register")}>注册</button></div><label>登录名<input value={accountUsername} onChange={(event) => setAccountUsername(event.target.value)} placeholder="3-30 位字母、数字或下划线" autoComplete="username" minLength={3} maxLength={30} autoFocus /></label><label>密码<input type="password" value={accountPassword} onChange={(event) => setAccountPassword(event.target.value)} placeholder="至少 8 位" autoComplete={accountMode === "register" ? "new-password" : "current-password"} minLength={8} maxLength={72} /></label><p className="modal-help">{accountMode === "register" ? "创建后会立即登录，并将当前设备的收藏和歌单保存到云端。" : "输入登录名和密码后直接登录，不发送邮件。"}</p><div className="modal-actions modal-actions-end"><button type="submit" disabled={accountUsername.trim().length < 3 || accountPassword.length < 8 || cloudStatus === "loading"}>{cloudStatus === "loading" ? "请稍候" : accountMode === "register" ? "创建并登录" : "登录"}</button></div></form>}</section></div>}
       {isPlaylistModalOpen && <div className="modal-layer" role="dialog" aria-modal="true" aria-labelledby="playlist-title"><button className="modal-backdrop" onClick={() => setIsPlaylistModalOpen(false)} aria-label="关闭新建歌单" /><form className="settings-modal" onSubmit={createPlaylist}><div className="modal-heading"><div><span className="modal-icon playlist-modal-icon"><ListMusic size={20} /></span><div><h2 id="playlist-title">新建歌单</h2><p>{trackToAdd ? `创建后添加 ${trackToAdd.name}` : "歌单保存在当前浏览器。"}</p></div></div><button type="button" onClick={() => setIsPlaylistModalOpen(false)} aria-label="关闭"><X size={20} /></button></div><label>歌单名称<input value={playlistDraft} onChange={(event) => setPlaylistDraft(event.target.value)} placeholder="例如：通勤播放" maxLength={30} autoFocus /></label><div className="modal-actions modal-actions-end"><button type="submit" disabled={!playlistDraft.trim()}>创建歌单</button></div></form></div>}
       {trackToAdd && !isPlaylistModalOpen && <div className="modal-layer" role="dialog" aria-modal="true" aria-labelledby={isMoveDialog ? "move-playlist-title" : "add-playlist-title"}><button className="modal-backdrop" onClick={() => { setTrackToAdd(null); setMoveFromPlaylistId(""); setIsMoveDialog(false); }} aria-label={isMoveDialog ? "关闭移动到歌单" : "关闭添加到歌单"} /><section className="settings-modal"><div className="modal-heading"><div><span className="modal-icon playlist-modal-icon">{isMoveDialog ? <ArrowRightLeft size={20} /> : <Plus size={20} />}</span><div><h2 id={isMoveDialog ? "move-playlist-title" : "add-playlist-title"}>{isMoveDialog ? "移动到歌单" : "添加到歌单"}</h2><p>{trackToAdd.name} · {trackToAdd.singer}</p></div></div><button type="button" onClick={() => { setTrackToAdd(null); setMoveFromPlaylistId(""); setIsMoveDialog(false); }} aria-label="关闭"><X size={20} /></button></div><div className="playlist-picker">{userPlaylists.filter((playlist) => playlist.id !== moveFromPlaylistId).map((playlist) => <button key={playlist.id} onClick={() => isMoveDialog ? moveTrackToPlaylist(playlist.id) : addTrackToPlaylist(playlist.id)}><span><ListMusic size={17} /><strong>{playlist.name}</strong></span><small>{playlist.tracks.length} 首</small></button>)}{!isMoveDialog && <button className="create-playlist-option" onClick={() => openCreatePlaylist(trackToAdd)}><span><Plus size={17} /><strong>新建歌单</strong></span></button>}</div></section></div>}
     </main>
