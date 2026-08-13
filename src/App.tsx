@@ -97,6 +97,27 @@ const lyricLines = (lyrics: string) =>
     .map((line) => line.trim())
     .filter(Boolean);
 
+const mergeTracks = (primary: Track[], secondary: Track[]) => {
+  const merged = new Map<string, Track>();
+  [...primary, ...secondary].forEach((track) => {
+    const key = `${track.source}:${track.id}`;
+    merged.set(key, { ...merged.get(key), ...track });
+  });
+  return [...merged.values()];
+};
+
+const mergePlaylists = (remote: UserPlaylist[], local: UserPlaylist[]) => {
+  const merged = new Map<string, UserPlaylist>();
+  remote.forEach((playlist) => merged.set(playlist.id, playlist));
+  local.forEach((playlist) => {
+    const existing = merged.get(playlist.id);
+    merged.set(playlist.id, existing
+      ? { ...existing, name: playlist.name || existing.name, tracks: mergeTracks(existing.tracks, playlist.tracks) }
+      : playlist);
+  });
+  return [...merged.values()];
+};
+
 export default function App() {
   const [page, setPage] = useState<Page>("discover");
   const [source, setSource] = useState<MusicSource>("netease");
@@ -155,6 +176,7 @@ export default function App() {
   const lastPositionUpdateRef = useRef(0);
   const cloudReadyRef = useRef(false);
   const cloudUserIdRef = useRef("");
+  const cloudSaveChainRef = useRef<Promise<void>>(Promise.resolve());
 
   const selectedPlaylist = userPlaylists.find((playlist) => playlist.id === selectedPlaylistId);
   const displayTracks = page === "library" ? favorites : page === "imported" ? importedTracks : page === "playlist" ? selectedPlaylist?.tracks ?? [] : results;
@@ -193,9 +215,16 @@ export default function App() {
         const remote = await loadCloudLibrary(user.id);
         if (!active) return;
         if (remote) {
-          setFavorites(remote.favorites);
-          setUserPlaylists(remote.playlists);
+          const mergedFavorites = mergeTracks(remote.favorites, favorites);
+          const mergedPlaylists = mergePlaylists(remote.playlists, userPlaylists);
+          setFavorites(mergedFavorites);
+          setUserPlaylists(mergedPlaylists);
           setPlayMode(remote.playMode);
+          await saveCloudLibrary(user.id, {
+            favorites: mergedFavorites,
+            playlists: mergedPlaylists,
+            playMode: remote.playMode,
+          });
         } else {
           await saveCloudLibrary(user.id, { favorites, playlists: userPlaylists, playMode });
         }
@@ -223,15 +252,15 @@ export default function App() {
   useEffect(() => {
     if (!cloudUser || !cloudReadyRef.current) return;
     setCloudStatus("saving");
-    const timeout = window.setTimeout(() => {
-      void saveCloudLibrary(cloudUser.id, { favorites, playlists: userPlaylists, playMode })
-        .then(() => setCloudStatus("synced"))
-        .catch((reason) => {
-          setCloudStatus("error");
-          setError(reason instanceof Error ? `云同步失败：${reason.message}` : "云同步失败，请稍后重试。");
-        });
-    }, 700);
-    return () => window.clearTimeout(timeout);
+    const snapshot = { favorites, playlists: userPlaylists, playMode };
+    const save = cloudSaveChainRef.current.then(() => saveCloudLibrary(cloudUser.id, snapshot));
+    cloudSaveChainRef.current = save.catch(() => undefined);
+    void save
+      .then(() => setCloudStatus("synced"))
+      .catch((reason) => {
+        setCloudStatus("error");
+        setError(reason instanceof Error ? `云同步失败：${reason.message}` : "云同步失败，请稍后重试。");
+      });
   }, [cloudUser, favorites, userPlaylists, playMode]);
 
   useEffect(() => {
