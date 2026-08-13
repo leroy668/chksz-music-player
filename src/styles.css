@@ -55,7 +55,8 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 .playlist-list i.red { background: #d75a56; }.playlist-list i.gold { background: #d6aa5d; }.playlist-list i.blue { background: #6b92d7; }
 .playlist-list small { margin-left: auto; color: #63666e; font-size: 11px; }
 .side-bottom { display: grid; gap: 14px; margin-top: auto; padding: 18px 12px 0; border-top: 1px solid var(--soft-line); }
-.api-key-button { display: flex; align-items: center; gap: 9px; padding: 0; color: #c4c5ca; background: transparent; border: 0; font-size: 12px; }
+.api-key-button { min-width: 0; display: flex; align-items: center; gap: 9px; padding: 0; color: #c4c5ca; background: transparent; border: 0; font-size: 12px; }
+.api-key-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .api-key-button svg { color: var(--yellow); }
 .side-bottom a { display: flex; align-items: center; gap: 3px; color: #83868e; font-size: 11px; }
 .side-bottom a:hover { color: var(--copy); }

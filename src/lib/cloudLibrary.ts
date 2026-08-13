@@ -15,6 +15,7 @@ export type CloudLibrary = {
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim();
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim();
+const MUSIC_AUTH_STORAGE_KEY = "soundfield-music-supabase-auth";
 
 export const cloudEnabled = Boolean(supabaseUrl && supabaseAnonKey);
 export const supabase = cloudEnabled ? createClient(supabaseUrl, supabaseAnonKey, {
@@ -22,6 +23,7 @@ export const supabase = cloudEnabled ? createClient(supabaseUrl, supabaseAnonKey
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: true,
+    storageKey: MUSIC_AUTH_STORAGE_KEY,
   },
 }) : null;
 
@@ -44,7 +46,7 @@ export const sendLoginLink = async (email: string) => {
 
 export const signOutCloud = async () => {
   if (!supabase) return;
-  const { error } = await supabase.auth.signOut();
+  const { error } = await supabase.auth.signOut({ scope: "local" });
   if (error) throw error;
 };
 

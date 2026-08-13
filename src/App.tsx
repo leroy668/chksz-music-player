@@ -589,7 +589,7 @@ export default function App() {
           </div>
         </div>
         <div className="side-bottom">
-          <button className="api-key-button" onClick={() => setIsAccountOpen(true)}><Cloud size={17} /><span>{cloudUser ? cloudStatus === "saving" ? "正在同步" : cloudStatus === "error" ? "同步异常" : "歌单已云同步" : cloudEnabled ? "登录同步歌单" : "云同步待配置"}</span></button>
+          <button className="api-key-button" onClick={() => setIsAccountOpen(true)} title={cloudUser?.email ?? "登录同步歌单"}><Cloud size={17} /><span>{cloudUser ? cloudStatus === "saving" ? "正在同步" : cloudStatus === "error" ? "同步异常" : `已同步 · ${cloudUser.email ?? "当前账号"}` : cloudEnabled ? "登录同步歌单" : "云同步待配置"}</span></button>
           <button className="api-key-button" onClick={() => setIsSettingsOpen(true)}><KeyRound size={17} /><span>{apiKey ? "API Key 已连接" : "连接 ChKSz API"}</span></button>
           <a href="https://api.chksz.com/login" target="_blank" rel="noreferrer">获取 API Key <ChevronRight size={15} /></a>
         </div>
